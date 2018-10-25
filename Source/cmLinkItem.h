@@ -18,6 +18,18 @@
 
 class cmGeneratorTarget;
 
+class cmLinkItemFast
+{
+ public:
+  cmLinkItemFast(): string_index(0), Target(0) {}
+  cmLinkItemFast(int string_index,
+             cmGeneratorTarget const* t): string_index(string_index), Target(t) {}
+  cmLinkItemFast(cmLinkItemFast const& r): string_index(r.string_index), Target(r.Target) {}
+  cmGeneratorTarget const* Target;
+  int string_index;
+};
+
+
 // Basic information about each link item.
 class cmLinkItem: public std::string
 {

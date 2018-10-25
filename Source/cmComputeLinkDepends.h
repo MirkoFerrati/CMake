@@ -18,6 +18,7 @@
 #include "cmGraphAdjacencyList.h"
 
 #include <queue>
+#include <unordered_map>
 
 class cmComputeComponentGraph;
 class cmGlobalGenerator;
@@ -38,6 +39,7 @@ public:
   // Basic information about each link item.
   struct LinkEntry
   {
+    int string_index = -1;
     std::string Item;
     cmGeneratorTarget const* Target;
     bool IsSharedDep;
@@ -65,27 +67,39 @@ private:
   std::string Config;
   EntryVector FinalLinkEntries;
 
-  std::map<std::string, int>::iterator
+  std::unordered_map<std::string, int>::iterator
   AllocateLinkEntry(std::string const& item);
   int AddLinkEntry(cmLinkItem const& item);
-  void AddVarLinkEntries(int depender_index, const char* value);
+  int AddLinkEntry(cmLinkItemFast const& item);
+  void AddVarLinkEntries(int depender_index, int string_index );//const char* value);
   void AddDirectLinkEntries();
   template <typename T>
     void AddLinkEntries(int depender_index, std::vector<T> const& libs);
+//  template <>
+  void AddLinkEntries(int depender_index, std::vector<cmLinkItemFast> const& libs);
   cmGeneratorTarget const* FindTargetToLink(int depender_index,
                                             const std::string& name);
 
   // One entry for each unique item.
   std::vector<LinkEntry> EntryList;
-  std::map<std::string, int> LinkEntryIndex;
+  std::unordered_map<std::string, int> LinkEntryIndex;
 
   // BFS of initial dependencies.
   struct BFSEntry
   {
     int Index;
+    int stringIndex;
     const char* LibDepends;
   };
   std::queue<BFSEntry> BFSQueue;
+
+  static std::unordered_map<std::string, int> string_to_index_cache;
+  static std::unordered_map<int, std::string> index_to_string_cache;
+  static int max_cache;
+  int cacheFind(const std::string& s);
+  const std::string& cacheFind(int i);
+  int cacheAdd(std::string s);
+
   void FollowLinkEntry(BFSEntry const&);
 
   // Shared libraries that are included only because they are

@@ -170,6 +170,25 @@ items that we know the linker will re-use automatically (shared libs).
 
 */
 
+std::unordered_map<std::string,int> cmComputeLinkDepends::string_to_index_cache = std::unordered_map<std::string,int>();
+std::unordered_map<int, std::string> cmComputeLinkDepends::index_to_string_cache = std::unordered_map<int, std::string>();
+int cmComputeLinkDepends::max_cache=0;
+
+int cmComputeLinkDepends::cacheFind(const std::string& s)
+{
+  auto iter = string_to_index_cache.find(s);
+  if (iter!=string_to_index_cache.end()) return iter->second;
+  string_to_index_cache[s] = max_cache;
+  index_to_string_cache[max_cache] = s;
+  max_cache++;
+  return max_cache-1;
+}
+
+const std::string& cmComputeLinkDepends::cacheFind(int i)
+{
+  return index_to_string_cache[i];
+}
+
 //----------------------------------------------------------------------------
 cmComputeLinkDepends
 ::cmComputeLinkDepends(const cmGeneratorTarget* target,
@@ -216,19 +235,27 @@ void cmComputeLinkDepends::SetOldLinkDirMode(bool b)
 std::vector<cmComputeLinkDepends::LinkEntry> const&
 cmComputeLinkDepends::Compute()
 {
+  std::cout<<__FILE__<<":"<<__LINE__<<std::endl;
+
   // Follow the link dependencies of the target to be linked.
   this->AddDirectLinkEntries();
-
+  std::cout<<__FILE__<<":"<<__LINE__<<" initial size "<<this->BFSQueue.size()<<std::endl;
+  int queue_size=0;
+  int queue_explored=0;
+  int queue_explored_old =0;
   // Complete the breadth-first search of dependencies.
   while(!this->BFSQueue.empty())
     {
     // Get the next entry.
     BFSEntry qe = this->BFSQueue.front();
     this->BFSQueue.pop();
-
+    queue_explored++;
+    if (qe.stringIndex!=-1) queue_explored_old++;
+    queue_size = (queue_size>this->BFSQueue.size()?queue_size:this->BFSQueue.size());
     // Follow the entry's dependencies.
     this->FollowLinkEntry(qe);
     }
+  std::cout<<__FILE__<<":"<<__LINE__<<" explored "<<queue_explored<<" old "<<queue_explored_old<<" max "<<queue_size<<std::endl;
 
   // Complete the search of shared library dependencies.
   while(!this->SharedDepQueue.empty())
@@ -291,12 +318,12 @@ cmComputeLinkDepends::Compute()
 }
 
 //----------------------------------------------------------------------------
-std::map<std::string, int>::iterator
+std::unordered_map<std::string, int>::iterator
 cmComputeLinkDepends::AllocateLinkEntry(std::string const& item)
 {
-  std::map<std::string, int>::value_type
+  std::unordered_map<std::string, int>::value_type
     index_entry(item, static_cast<int>(this->EntryList.size()));
-  std::map<std::string, int>::iterator
+  std::unordered_map<std::string, int>::iterator
     lei = this->LinkEntryIndex.insert(index_entry).first;
   this->EntryList.push_back(LinkEntry());
   this->InferredDependSets.push_back(0);
@@ -308,7 +335,7 @@ cmComputeLinkDepends::AllocateLinkEntry(std::string const& item)
 int cmComputeLinkDepends::AddLinkEntry(cmLinkItem const& item)
 {
   // Check if the item entry has already been added.
-  std::map<std::string, int>::iterator lei = this->LinkEntryIndex.find(item);
+  std::unordered_map<std::string, int>::iterator lei = this->LinkEntryIndex.find(item);
   if(lei != this->LinkEntryIndex.end())
     {
     // Yes.  We do not need to follow the item's dependencies again.
@@ -330,7 +357,7 @@ int cmComputeLinkDepends::AddLinkEntry(cmLinkItem const& item)
   if(entry.Target)
     {
     // Target dependencies are always known.  Follow them.
-    BFSEntry qe = {index, 0};
+    BFSEntry qe = {index, -1, 0};
     this->BFSQueue.push(qe);
     }
   else
@@ -341,7 +368,8 @@ int cmComputeLinkDepends::AddLinkEntry(cmLinkItem const& item)
     if(const char* val = this->Makefile->GetDefinition(var))
       {
       // The item dependencies are known.  Follow them.
-      BFSEntry qe = {index, val};
+      int string_index = cacheFind(val);
+      BFSEntry qe = {index, string_index, 0};
       this->BFSQueue.push(qe);
       }
     else if(!entry.IsFlag)
@@ -350,6 +378,57 @@ int cmComputeLinkDepends::AddLinkEntry(cmLinkItem const& item)
       this->InferredDependSets[index] = new DependSetList;
       }
     }
+
+  return index;
+}
+
+int cmComputeLinkDepends::AddLinkEntry(cmLinkItemFast const& item)
+{
+  // Check if the item entry has already been added.
+  std::unordered_map<std::string, int>::iterator lei = this->LinkEntryIndex.find(cacheFind(item.string_index));
+  if(lei != this->LinkEntryIndex.end())
+  {
+    // Yes.  We do not need to follow the item's dependencies again.
+    return lei->second;
+  }
+
+  // Allocate a spot for the item entry.
+  lei = this->AllocateLinkEntry(cacheFind(item.string_index));
+
+  // Initialize the item entry.
+  int index = lei->second;
+  LinkEntry& entry = this->EntryList[index];
+  entry.string_index = item.string_index;
+  entry.Item = cacheFind(item.string_index);
+  entry.Target = item.Target;
+  entry.IsFlag = (!entry.Target && entry.Item[0] == '-' && entry.Item[1] != 'l' &&
+      entry.Item.substr(0, 10) != "-framework");
+
+  // If the item has dependencies queue it to follow them.
+  if(entry.Target)
+  {
+    // Target dependencies are always known.  Follow them.
+    BFSEntry qe = {index, -1, 0};
+    this->BFSQueue.push(qe);
+  }
+  else
+  {
+    // Look for an old-style <item>_LIB_DEPENDS variable.
+    std::string var = entry.Item;
+    var += "_LIB_DEPENDS";
+    if(const char* val = this->Makefile->GetDefinition(var))
+    {
+      // The item dependencies are known.  Follow them.
+      int string_index = cacheFind(val);
+      BFSEntry qe = {index, string_index, 0};
+      this->BFSQueue.push(qe);
+    }
+    else if(!entry.IsFlag)
+    {
+      // The item dependencies are not known.  We need to infer them.
+      this->InferredDependSets[index] = new DependSetList;
+    }
+  }
 
   return index;
 }
@@ -393,7 +472,7 @@ void cmComputeLinkDepends::FollowLinkEntry(BFSEntry const& qe)
   else
     {
     // Follow the old-style dependency list.
-    this->AddVarLinkEntries(depender_index, qe.LibDepends);
+    this->AddVarLinkEntries(depender_index, qe.stringIndex);
     }
 }
 
@@ -434,7 +513,7 @@ cmComputeLinkDepends
 void cmComputeLinkDepends::HandleSharedDependency(SharedDepEntry const& dep)
 {
   // Check if the target already has an entry.
-  std::map<std::string, int>::iterator lei =
+  std::unordered_map<std::string, int>::iterator lei =
     this->LinkEntryIndex.find(dep.Item);
   if(lei == this->LinkEntryIndex.end())
     {
@@ -473,38 +552,48 @@ void cmComputeLinkDepends::HandleSharedDependency(SharedDepEntry const& dep)
 }
 
 //----------------------------------------------------------------------------
-void cmComputeLinkDepends::AddVarLinkEntries(int depender_index,
-                                             const char* value)
+void cmComputeLinkDepends::AddVarLinkEntries(int depender_index, int string_index)
+//                                             const char* value)
 {
   // This is called to add the dependencies named by
   // <item>_LIB_DEPENDS.  The variable contains a semicolon-separated
   // list.  The list contains link-type;item pairs and just items.
-  std::vector<std::string> deplist;
-  cmSystemTools::ExpandListArgument(value, deplist);
+  std::vector<int> deplist;
 
+  static std::unordered_map<int, std::vector<int>> cache;
+
+  if (cache.count(string_index)) deplist = cache[string_index];
+  else {
+    std::vector<std::string> deplist_s;
+    cmSystemTools::ExpandListArgument(cacheFind(string_index), deplist_s);
+    for (auto s: deplist_s)
+      deplist.push_back(cacheFind(s));
+    cache[string_index]=deplist;
+  }
   // Look for entries meant for this configuration.
-  std::vector<cmLinkItem> actual_libs;
+  std::vector<cmLinkItemFast> actual_libs;
   cmTargetLinkLibraryType llt = GENERAL_LibraryType;
   bool haveLLT = false;
-  for(std::vector<std::string>::const_iterator di = deplist.begin();
-      di != deplist.end(); ++di)
+  for(std::vector<int>::const_iterator i = deplist.begin();
+      i != deplist.end(); ++i)
     {
-    if(*di == "debug")
+    const std::string& di = cacheFind(*i);
+    if(di == "debug")
       {
       llt = DEBUG_LibraryType;
       haveLLT = true;
       }
-    else if(*di == "optimized")
+    else if(di == "optimized")
       {
       llt = OPTIMIZED_LibraryType;
       haveLLT = true;
       }
-    else if(*di == "general")
+    else if(di == "general")
       {
       llt = GENERAL_LibraryType;
       haveLLT = true;
       }
-    else if(!di->empty())
+    else if(!di.empty())
       {
       // If no explicit link type was given prior to this entry then
       // check if the entry has its own link type variable.  This is
@@ -513,7 +602,7 @@ void cmComputeLinkDepends::AddVarLinkEntries(int depender_index,
       // lower.
       if(!haveLLT)
         {
-        std::string var = *di;
+        std::string var = di;
         var += "_LINK_TYPE";
         if(const char* val = this->Makefile->GetDefinition(var))
           {
@@ -531,12 +620,12 @@ void cmComputeLinkDepends::AddVarLinkEntries(int depender_index,
       // If the library is meant for this link type then use it.
       if(llt == GENERAL_LibraryType || llt == this->LinkType)
         {
-        cmLinkItem item(*di, this->FindTargetToLink(depender_index, *di));
+        cmLinkItemFast item(*i, this->FindTargetToLink(depender_index, di));
         actual_libs.push_back(item);
         }
       else if(this->OldLinkDirMode)
         {
-        cmLinkItem item(*di, this->FindTargetToLink(depender_index, *di));
+        cmLinkItem item(di, this->FindTargetToLink(depender_index, di));
         this->CheckWrongConfigItem(item);
         }
 
@@ -563,6 +652,72 @@ void cmComputeLinkDepends::AddDirectLinkEntries()
     {
     this->CheckWrongConfigItem(*wi);
     }
+}
+
+void
+cmComputeLinkDepends::AddLinkEntries(
+    int depender_index, std::vector<cmLinkItemFast> const& libs) {
+  // Track inferred dependency sets implied by this list.
+  std::map<int, DependSet> dependSets;
+
+  int target_index = cacheFind(this->Target->GetName());
+  // Loop over the libraries linked directly by the depender.
+  for(typename std::vector<cmLinkItemFast>::const_iterator li = libs.begin();
+      li != libs.end(); ++li)
+  {
+    // Skip entries that will resolve to the target getting linked or
+    // are empty.
+    cmLinkItemFast const& item = *li;
+    if(item.string_index == target_index || item.string_index==-1)
+    {
+      continue;
+    }
+
+    // Add a link entry for this item.
+    int dependee_index = this->AddLinkEntry(*li);
+
+    // The dependee must come after the depender.
+    if(depender_index >= 0)
+    {
+      this->EntryConstraintGraph[depender_index].push_back(dependee_index);
+    }
+    else
+    {
+      // This is a direct dependency of the target being linked.
+      this->OriginalEntries.push_back(dependee_index);
+    }
+
+    // Update the inferred dependencies for earlier items.
+    for(std::map<int, DependSet>::iterator dsi = dependSets.begin();
+        dsi != dependSets.end(); ++dsi)
+    {
+      // Add this item to the inferred dependencies of other items.
+      // Target items are never inferred dependees because unknown
+      // items are outside libraries that should not be depending on
+      // targets.
+      if(!this->EntryList[dependee_index].Target &&
+          !this->EntryList[dependee_index].IsFlag &&
+          dependee_index != dsi->first)
+      {
+        dsi->second.insert(dependee_index);
+      }
+    }
+
+    // If this item needs to have dependencies inferred, do so.
+    if(this->InferredDependSets[dependee_index])
+    {
+      // Make sure an entry exists to hold the set for the item.
+      dependSets[dependee_index];
+    }
+  }
+
+  // Store the inferred dependency sets discovered for this list.
+  for(std::map<int, DependSet>::iterator dsi = dependSets.begin();
+      dsi != dependSets.end(); ++dsi)
+  {
+    this->InferredDependSets[dsi->first]->push_back(dsi->second);
+  }
+
 }
 
 //----------------------------------------------------------------------------

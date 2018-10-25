@@ -1382,19 +1382,24 @@ void cmGlobalGenerator::Generate()
   this->InitializeProgressMarks();
 
   this->ProcessEvaluationFiles();
-
+  std::cout<<"line "<<__LINE__<<std::endl;
   // Generate project files
   for (unsigned int i = 0; i < this->LocalGenerators.size(); ++i)
     {
     this->SetCurrentMakefile(this->LocalGenerators[i]->GetMakefile());
+      std::cout<<"line "<<__LINE__<<" generating local "<<this->LocalGenerators[i]->GetMakefile()<<std::endl;
     this->LocalGenerators[i]->Generate();
     if(!this->LocalGenerators[i]->GetMakefile()->IsOn(
       "CMAKE_SKIP_INSTALL_RULES"))
       {
+        std::cout<<"line "<<__LINE__<<" generating install "<<this->LocalGenerators[i]->GetMakefile()<<std::endl;
       this->LocalGenerators[i]->GenerateInstallRules();
       }
     this->LocalGenerators[i]->GenerateTestFiles();
-    this->CMakeInstance->UpdateProgress("Generating",
+    std::cout<<"Generating "<<(static_cast<float>(i)+1.0f)/
+        static_cast<float>(this->LocalGenerators.size())<<std::endl;
+
+      this->CMakeInstance->UpdateProgress("Generating",
       (static_cast<float>(i)+1.0f)/
        static_cast<float>(this->LocalGenerators.size()));
     }
